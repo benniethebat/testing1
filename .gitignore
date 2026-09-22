@@ -1,0 +1,12 @@
+data/raw/*
+data/staging/*
+data/warehouse/*
+!data/raw/.gitkeep
+!data/staging/.gitkeep
+!data/warehouse/.gitkeep
+
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
