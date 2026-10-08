@@ -143,6 +143,8 @@ def try_book(current: dict) -> bool:
                 return False
             continue
         print(f"  -> ok={ok} {detail}")
+        if DRY_RUN and not ok:
+            return False  # one diagnostic attempt is enough
         if ok and not DRY_RUN:
             BOOKED_FILE.write_text(json.dumps({"slot": iso, "detail": detail}))
             notify(

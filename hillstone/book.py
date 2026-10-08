@@ -61,6 +61,38 @@ def time_regex(when: datetime):
     return re.compile(rf"(^|\D){h}:{when:%M}\s*{when:%p}", re.I)
 
 
+DUMP_JS = """() => {
+  const out = [];
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('button,a,select,input,textarea,[role=button],[role=option],[role=radio],[aria-label]')) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      out.push([el.tagName.toLowerCase(), el.getAttribute('role') || el.type || '',
+                (el.innerText || el.value || '').trim().replace(/\\s+/g, ' ').slice(0, 60),
+                el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || ''].join(' | '));
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+  };
+  walk(document);
+  return out.slice(0, 120);
+}"""
+
+
+def dump_page(page, why):
+    """Print the page's visible controls to the log (dry runs only; no guest data there)."""
+    print(f"  --- page dump ({why}) url={page.url}")
+    for fr in page.frames:
+        print(f"  frame: {fr.url[:120]}")
+        try:
+            for line in fr.evaluate(DUMP_JS):
+                print(f"    {line}")
+            text = fr.evaluate("() => document.body ? document.body.innerText : ''")
+            print("    text: " + " / ".join(t.strip() for t in text.splitlines() if t.strip())[:800])
+        except Exception as e:
+            print(f"    (unreadable: {e})")
+
+
 class Flow:
     def __init__(self, page, when, party):
         self.page, self.when, self.party = page, when, party
@@ -273,6 +305,9 @@ def book(when: datetime, party: int, dry_run=False):
             f.shot("date-selected")
             if not f.click_slot():
                 f.shot("slot-not-found")
+                if dry_run:
+                    dump_page(page, "slot not found")
+                    print("  api calls:\n    " + "\n    ".join(f.api_log[:40]))
                 return False, f"slot {when:%-I:%M %p} not found on page"
             page.wait_for_timeout(1500)
             # Some flows have an intermediate "Continue"/"Next" (e.g. seating type).
