@@ -135,6 +135,13 @@ def try_book(current: dict) -> bool:
             ok, detail = book(when, PARTY_SIZE, dry_run=DRY_RUN)
         except Exception as e:
             ok, detail = False, f"{type(e).__name__}: {e}"
+            # Page didn't load or guest secrets are missing: other slots will fail the same way.
+            fatal = type(e).__name__ in ("TimeoutError", "PageLoadError") or "missing guest" in str(e)
+            print(f"  -> ok=False {detail}")
+            if fatal:
+                print("  giving up on remaining slots this run")
+                return False
+            continue
         print(f"  -> ok={ok} {detail}")
         if ok and not DRY_RUN:
             BOOKED_FILE.write_text(json.dumps({"slot": iso, "detail": detail}))

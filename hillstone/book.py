@@ -43,6 +43,10 @@ SUBMIT_RE = re.compile(r"^\s*(reserve|book|confirm|complete|submit|finish)", re.
 CARD_RE = re.compile(r"(card number|credit card|cvv|cvc)", re.I)
 
 
+class PageLoadError(RuntimeError):
+    """The booking page itself didn't load; retrying other slots won't help."""
+
+
 def guest():
     g = {k: os.getenv(f"GUEST_{k.upper()}", "").strip()
          for k in ("first_name", "last_name", "phone", "email", "notes")}
@@ -255,7 +259,13 @@ def book(when: datetime, party: int, dry_run=False):
         f = Flow(page, when, party)
         f.install_hooks()
         try:
-            page.goto(os.getenv("BOOK_URL") or BOOK_URL, wait_until="networkidle", timeout=45000)
+            # The widget polls in the background, so "networkidle" never fires.
+            page.goto(os.getenv("BOOK_URL") or BOOK_URL, wait_until="domcontentloaded", timeout=45000)
+            try:
+                page.wait_for_selector("button, select, input", timeout=30000)
+            except PWTimeout:
+                raise PageLoadError("booking page loaded but no controls appeared")
+            page.wait_for_timeout(2000)
             f.shot("loaded")
             f.set_party()
             f.set_date()
