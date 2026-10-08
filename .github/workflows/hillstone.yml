@@ -1,0 +1,82 @@
+name: Hillstone auto-book
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # GitHub may delay scheduled runs a few minutes
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Walk the booking flow but don't submit"
+        type: boolean
+        default: true
+      dates:
+        description: "Override DATES (YYYY-MM-DD,...); blank = next 2 Fridays"
+        required: false
+
+permissions:
+  contents: read
+  actions: write   # lets the job disable itself once a reservation is made
+
+concurrency:
+  group: hillstone
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      DATES: ${{ inputs.dates || vars.HILLSTONE_DATES }}
+      PARTY_SIZE: ${{ vars.PARTY_SIZE || '2' }}
+      WINDOW_START: ${{ vars.WINDOW_START || '17:00' }}
+      WINDOW_END: ${{ vars.WINDOW_END || '18:30' }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+      AUTO_BOOK: "1"
+      STATE_DIR: state
+      ARTIFACT_DIR: artifacts
+      CHROMIUM_PATH: /usr/bin/google-chrome   # preinstalled on ubuntu-latest
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      GUEST_FIRST_NAME: ${{ secrets.GUEST_FIRST_NAME }}
+      GUEST_LAST_NAME: ${{ secrets.GUEST_LAST_NAME }}
+      GUEST_PHONE: ${{ secrets.GUEST_PHONE }}
+      GUEST_EMAIL: ${{ secrets.GUEST_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: hillstone-state-${{ github.run_id }}
+          restore-keys: hillstone-state-
+
+      - name: Install Playwright
+        run: pip install -q playwright==1.47.0
+
+      - name: Check and book
+        run: python hillstone/watcher.py
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: hillstone-state-${{ github.run_id }}
+
+      - name: Stop schedule once booked
+        if: env.DRY_RUN != '1' && hashFiles('state/booked.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable hillstone.yml --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload debug screenshots (inputs masked)
+        if: always() && hashFiles('artifacts/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: hillstone-debug-${{ github.run_id }}
+          path: artifacts
+          retention-days: 2

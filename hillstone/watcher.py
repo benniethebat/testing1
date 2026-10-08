@@ -88,9 +88,9 @@ def iter_times(node):
             yield from iter_times(v)
 
 
-def open_slots(day, data) -> dict:
-    lo = datetime.combine(day, hm(WINDOW_START), TZ)
-    hi = datetime.combine(day, hm(WINDOW_END), TZ)
+def open_slots(day, data, start=WINDOW_START, end=WINDOW_END) -> dict:
+    lo = datetime.combine(day, hm(start), TZ)
+    hi = datetime.combine(day, hm(end), TZ)
     out = {}
     for t in iter_times(data):
         if not t.get("is_available") or "reserved_ts" not in t:
@@ -160,20 +160,27 @@ def main():
     seen = set(json.loads(SEEN_FILE.read_text())) if SEEN_FILE.exists() else set()
     today = datetime.now(TZ).date()
     current = {}
+    any_time = {}  # dry run only: any open slot, to exercise the flow when the window is full
     dates = [d for d in target_dates() if d >= today]
     print(f"Checking {', '.join(map(str, dates))} {WINDOW_START}-{WINDOW_END}, party {PARTY_SIZE}")
 
     for day in dates:
         try:
-            slots = open_slots(day, fetch(day))
+            data = fetch(day)
+            slots = open_slots(day, data)
             print(f"{day}: {len(slots)} open in window {sorted(slots.values())}")
             current.update(slots)
+            if DRY_RUN:
+                any_time.update(open_slots(day, data, "00:00", "23:59"))
         except Exception as e:  # keep checking other dates
             print(f"{day}: error {e}")
 
     booked = False
     if current and (AUTO_BOOK or DRY_RUN):
         booked = try_book(current)
+    elif DRY_RUN and any_time:
+        print("Window full; dry-running against the earliest open slot that day instead.")
+        try_book(dict([min(any_time.items())]))
 
     new = sorted(k for k in current if k not in seen)
     if new and not booked:
