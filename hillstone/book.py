@@ -113,13 +113,12 @@ class Flow:
 
     # -- network -----------------------------------------------------------
     def install_hooks(self):
-        start_ms = str(int(self.when.replace(minute=0).timestamp() * 1000) - 3600_000)
+        start_ms = str(int(self.when.timestamp() * 1000))
 
         def rewrite(route):
             parts = urlsplit(route.request.url)
             q = dict(parse_qsl(parts.query))
             if "search_ts" in q:
-                # Start an hour before the slot so it's inside the returned page.
                 q["search_ts"] = start_ms
             if "party_size" in q:
                 q["party_size"] = str(self.party)
@@ -139,27 +138,69 @@ class Flow:
         self.page.on("response", on_response)
 
     # -- steps -------------------------------------------------------------
-    def set_party(self):
-        p = self.page
-        for sel in p.locator("select").all():
+    def _select_option(self, pattern, name_hint):
+        """Pick the first <select> option whose text matches pattern. Returns the label or None."""
+        rx = re.compile(pattern, re.I)
+        for sel in self.page.locator("select").all():
             try:
-                opts = sel.locator("option").all_inner_texts()
-                if any(re.match(rf"^\s*{self.party}\b", o) for o in opts):
-                    val = next(o for o in opts if re.match(rf"^\s*{self.party}\b", o))
-                    sel.select_option(label=val)
-                    print(f"  party: select -> {val.strip()}")
-                    return
+                opts = sel.evaluate("s => [...s.options].map(o => o.text.trim())")
             except Exception:
                 continue
-        btn = p.get_by_role("button", name=re.compile(rf"^\s*{self.party}\s*(guests?|people|ppl)?\s*$", re.I))
+            label = next((o for o in opts if rx.search(o)), None)
+            if label:
+                sel.select_option(label=label)
+                print(f"  {name_hint}: select -> {label}")
+                return label
+        return None
+
+    def set_party(self):
+        if self._select_option(rf"^\s*{self.party}\s*(guests?|people)?\s*$", "party"):
+            return
+        btn = self.page.get_by_role("button", name=re.compile(rf"^\s*{self.party}\s*(guests?|people)?\s*$", re.I))
         if btn.count():
             btn.first.click()
             print("  party: button")
             return
         print("  party: no control found (relying on request rewrite)")
 
+    def set_time(self):
+        w = self.when
+        # Wisely's Time dropdown uses zero-padded labels ("05:00 PM").
+        pat = rf"^\s*0?{w:%-I}:{w:%M}\s*{w:%p}\s*$"
+        if not self._select_option(pat, "time"):
+            print("  time: no dropdown option (relying on request rewrite)")
+
+    CLICK_DAY_JS = """([month, day]) => {
+      // Find the calendar block headed "October 2026" and click its day cell.
+      const heads = [...document.querySelectorAll('body *')].filter(
+        e => e.children.length === 0 && e.textContent.trim() === month);
+      for (const h of heads) {
+        let box = h.parentElement;
+        for (let i = 0; i < 6 && box; i++, box = box.parentElement) {
+          const cells = [...box.querySelectorAll('*')].filter(
+            e => e.children.length === 0 && e.textContent.trim() === day && e.offsetParent !== null);
+          if (cells.length === 1) {
+            const t = cells[0].closest('button,a,td,[role=button],[role=gridcell]') || cells[0];
+            t.scrollIntoView({block: 'center'});
+            t.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    }"""
+
     def set_date(self):
         p, d = self.page, self.when
+        for _ in range(3):
+            if p.evaluate(self.CLICK_DAY_JS, [d.strftime("%B %Y"), str(d.day)]):
+                print(f"  date: calendar {d:%B %Y} day {d.day}")
+                return
+            nxt = p.locator('[aria-label="Next Month"]')
+            if not nxt.count():
+                break
+            nxt.first.click()
+            p.wait_for_timeout(500)
         date_input = p.locator("input[type=date]")
         if date_input.count():
             date_input.first.fill(d.strftime("%Y-%m-%d"))
@@ -301,7 +342,9 @@ def book(when: datetime, party: int, dry_run=False):
             f.shot("loaded")
             f.set_party()
             f.set_date()
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1000)
+            f.set_time()
+            page.wait_for_timeout(2500)
             f.shot("date-selected")
             if not f.click_slot():
                 f.shot("slot-not-found")
@@ -319,7 +362,10 @@ def book(when: datetime, party: int, dry_run=False):
             if CARD_RE.search(page.inner_text("body")) or page.frame_locator(
                     "iframe[src*=stripe], iframe[name*=card]").locator("input").count():
                 return False, "booking requires a credit card; not auto-submitting"
-            if not f.fill_form(g):
+            filled = f.fill_form(g)
+            if dry_run:
+                dump_page(page, "booking form")
+            if not filled:
                 f.shot("form-incomplete")
                 return False, "could not find all guest fields"
             if dry_run:
